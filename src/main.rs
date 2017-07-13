@@ -2,15 +2,10 @@ use std::fs;
 use std::io;
 
 fn is_file(entry: &io::Result<fs::DirEntry>) -> bool {
-    match entry.as_ref() {
-      Err(_) => false,
-      Ok(ref e) => {
-        if let Ok(metadata) = e.metadata() {
-            metadata.is_file()
-        } else {
-            false
-        }
-      }
+    let m = entry.and_then(|e| e.metadata());
+    match m {
+        Ok(metadata) => metadata.is_file(),
+        Err(_) => false,
     }
 }
 
@@ -21,7 +16,7 @@ fn main() {
                 let e = entry.unwrap();
                 println!("{:?}", e.path());
             }
-        }
-        Err(_) => println!("Error!")
+        },
+        Err(_) => println!("Error!"),
     }
 }
