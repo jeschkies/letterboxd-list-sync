@@ -1,22 +1,31 @@
 use std::fs;
 use std::io;
 
-fn is_file(entry: &io::Result<fs::DirEntry>) -> bool {
-    let m = entry.and_then(|e| e.metadata());
-    match m {
-        Ok(metadata) => metadata.is_file(),
-        Err(_) => false,
+fn is_file(entry: &fs::DirEntry) -> bool {
+    entry.metadata().ok()
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
+fn into_file(entry: io::Result<fs::DirEntry>) -> Option<fs::DirEntry> {
+    entry.ok().and_then(|e| {
+        if is_file(&e) {
+            Some(e)
+        } else {
+            None
+        }
+    })
+}
+
+fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
+    let dir = fs::read_dir(dir)?;
+    let files = dir.filter_map(into_file);
+    for file in files {
+        println!("{:?}", file.path());
     }
+    Ok(())
 }
 
 fn main() {
-    match fs::read_dir("./") {
-        Ok(entries) => {
-            for entry in entries.filter(is_file) {
-                let e = entry.unwrap();
-                println!("{:?}", e.path());
-            }
-        },
-        Err(_) => println!("Error!"),
-    }
+    list_files("./").expect("Error!")
 }
