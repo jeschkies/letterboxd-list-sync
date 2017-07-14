@@ -1,12 +1,32 @@
+#[macro_use]
+extern crate serde_derive;
+extern crate docopt;
+
 use std::fs;
 use std::io;
 
+use docopt::Docopt;
+
+const USAGE: &'static str = "
+Letterboxid Sync. Synchronizes movies in a folder with a list on Letterboxd.
+
+Usage:
+    letterboxd-sync <folder>
+";
+
+#[derive(Debug, Deserialize)]
+struct Args {
+    arg_folder: String
+}
+
+/// Returns true if entry is a file, false otherwise or on error.
 fn is_file(entry: &fs::DirEntry) -> bool {
     entry.metadata().ok()
         .map(|m| m.is_file())
         .unwrap_or(false)
 }
 
+/// Used in to filter_map entries into files. Directories are sorted out.
 fn into_file(entry: io::Result<fs::DirEntry>) -> Option<fs::DirEntry> {
     entry.ok().and_then(|e| {
         if is_file(&e) {
@@ -17,6 +37,7 @@ fn into_file(entry: io::Result<fs::DirEntry>) -> Option<fs::DirEntry> {
     })
 }
 
+/// List all files in dir.
 fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
     let dir = fs::read_dir(dir)?;
     let files = dir.filter_map(into_file);
@@ -27,5 +48,9 @@ fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
 }
 
 fn main() {
-    list_files("./").expect("Error!")
+    let args: Args = Docopt::new(USAGE)
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit());
+
+    list_files(args.arg_folder.as_str()).expect("Error!")
 }
