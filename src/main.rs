@@ -1,6 +1,9 @@
 #[macro_use]
 extern crate serde_derive;
 extern crate docopt;
+extern crate futures;
+extern crate letterboxd;
+extern crate tokio_core;
 
 use std::fs;
 use std::io;
@@ -39,11 +42,28 @@ fn into_file(entry: io::Result<fs::DirEntry>) -> Option<fs::DirEntry> {
 
 /// List all files in dir.
 fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
+    use tokio_core::reactor::Core;
+    use futures::future;
+
+    let core = Core::new().unwrap();
+    let key = String::from("4a168ac5ef7f124d03364db8be04394f319a4114a2e70695fa585ef778dd15e6");
+    let secret =
+        String::from("27be8dfc7d2c27e8cffb0b74a8e5c9235e70c71f6c34892677bd6746fbcc0b0b");
+    let client = letterboxd::Client::new(&core.handle(), key, secret);
+
     let dir = fs::read_dir(dir)?;
-    let files = dir.filter_map(into_file);
-    for file in files {
-        println!("{:?}", file.path());
-    }
+    let files = dir.filter_map(into_file)
+        .filter_map(|e| e.file_name().into_string().ok());
+
+    // Search each movie.
+    let requests = files.map(|movie| {
+      let request = letterboxd::SearchRequest::new(movie);
+      client.search(request)
+    });
+    future::join_all(requests);
+//    for file in files {
+//        println!("{:?}", file);
+//    }
     Ok(())
 }
 
