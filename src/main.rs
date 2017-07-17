@@ -57,8 +57,9 @@ fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
 
     // Search each movie.
     let requests = files.map(|movie| {
-      let request = letterboxd::SearchRequest::new(movie);
-      client.search(request)
+        println!("Search {}", movie);
+        let request = letterboxd::SearchRequest::new(movie);
+        client.search(request)
     });
     let result = future::join_all(requests);
     println!("{:?}", core.run(result)?);
