@@ -45,10 +45,10 @@ fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
     use tokio_core::reactor::Core;
     use futures::future;
 
-    let core = Core::new().unwrap();
-    let key = String::from("4a168ac5ef7f124d03364db8be04394f319a4114a2e70695fa585ef778dd15e6");
+    let mut core = Core::new().unwrap();
+    let key = String::from("");
     let secret =
-        String::from("27be8dfc7d2c27e8cffb0b74a8e5c9235e70c71f6c34892677bd6746fbcc0b0b");
+        String::from("");
     let client = letterboxd::Client::new(&core.handle(), key, secret);
 
     let dir = fs::read_dir(dir)?;
@@ -60,10 +60,8 @@ fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
       let request = letterboxd::SearchRequest::new(movie);
       client.search(request)
     });
-    future::join_all(requests);
-//    for file in files {
-//        println!("{:?}", file);
-//    }
+    let result = future::join_all(requests);
+    println!("{:?}", core.run(result)?);
     Ok(())
 }
 
