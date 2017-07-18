@@ -5,6 +5,7 @@ extern crate futures;
 extern crate letterboxd;
 extern crate tokio_core;
 
+use std::env;
 use std::fs;
 use std::io;
 
@@ -46,9 +47,8 @@ fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
     use futures::future;
 
     let mut core = Core::new().unwrap();
-    let key = String::from("");
-    let secret =
-        String::from("");
+    let key = env::var("LETTERBOXD_KEY")?;
+    let secret = env::var("LETTERBOXD_SECRET")?;
     let client = letterboxd::Client::new(&core.handle(), key, secret);
 
     let dir = fs::read_dir(dir)?;
@@ -58,7 +58,14 @@ fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
     // Search each movie.
     let requests = files.map(|movie| {
         println!("Search {}", movie);
-        let request = letterboxd::SearchRequest::new(movie);
+        let request = letterboxd::SearchRequest {
+            cursor: None,
+            per_page: Some(1),
+            input: movie,
+            search_method: Some(letterboxd::SearchMethod::Autocomplete),
+            include: None,
+            contribution_type: None,
+        };
         client.search(request)
     });
     let result = future::join_all(requests);
