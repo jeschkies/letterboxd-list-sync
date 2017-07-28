@@ -1,3 +1,5 @@
+#![feature(conservative_impl_trait)]
+
 #[macro_use]
 extern crate serde_derive;
 extern crate docopt;
@@ -5,6 +7,7 @@ extern crate futures;
 extern crate letterboxd;
 extern crate tokio_core;
 
+use futures::{Future, future};
 use std::env;
 use std::fs;
 use std::io;
@@ -42,32 +45,36 @@ fn into_file(entry: io::Result<fs::DirEntry>) -> Option<fs::DirEntry> {
 }
 
 /// List all files in dir.
-fn list_files(dir: &str) -> Result<(), Box<std::error::Error>>{
+fn list_files(path: &str) -> Result<impl Iterator<Item = std::string::String>, Box<std::error::Error>> {
+    let dir = fs::read_dir(path)?;
+    let files = dir.filter_map(into_file).filter_map(|e| e.file_name().into_string().ok());
+    Ok(files)
+}
+
+/// Search movie on letterbox.
+fn search_movie(client: &letterboxd::Client, movie: std::string::String) -> Box<Future<Item = letterboxd::SearchResponse, Error = letterboxd::Error>> {
+    let request = letterboxd::SearchRequest {
+        cursor: None,
+        per_page: Some(1),
+        input: movie,
+        search_method: Some(letterboxd::SearchMethod::Autocomplete),
+        include: None,
+        contribution_type: None,
+    };
+    client.search(request)
+}
+
+fn sync_list(path: &str) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
-    use futures::future;
 
     let mut core = Core::new().unwrap();
     let key = env::var("LETTERBOXD_KEY")?;
     let secret = env::var("LETTERBOXD_SECRET")?;
     let client = letterboxd::Client::new(&core.handle(), key, secret);
 
-    let dir = fs::read_dir(dir)?;
-    let files = dir.filter_map(into_file)
-        .filter_map(|e| e.file_name().into_string().ok());
+    let files = list_files(path)?;
 
-    // Search each movie.
-    let requests = files.map(|movie| {
-        println!("Search {}", movie);
-        let request = letterboxd::SearchRequest {
-            cursor: None,
-            per_page: Some(1),
-            input: movie,
-            search_method: Some(letterboxd::SearchMethod::Autocomplete),
-            include: None,
-            contribution_type: None,
-        };
-        client.search(request)
-    });
+    let requests = files.map(|movie| { search_movie(&client, movie) });
     let result = future::join_all(requests);
     println!("{:?}", core.run(result)?);
     Ok(())
@@ -78,5 +85,5 @@ fn main() {
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    list_files(args.arg_folder.as_str()).expect("Error!")
+    sync_list(args.arg_folder.as_str()).expect("Error!")
 }
