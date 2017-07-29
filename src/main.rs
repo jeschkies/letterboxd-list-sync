@@ -5,9 +5,11 @@ extern crate serde_derive;
 extern crate docopt;
 extern crate futures;
 extern crate letterboxd;
+extern crate regex;
 extern crate tokio_core;
 
 use futures::{Future, future};
+use regex::Regex;
 use std::env;
 use std::fs;
 use std::io;
@@ -74,9 +76,16 @@ fn sync_list(path: &str) -> Result<(), Box<std::error::Error>> {
 
     let files = list_files(path)?;
 
-    let requests = files.map(|movie| { search_movie(&client, movie) });
-    let result = future::join_all(requests);
-    println!("{:?}", core.run(result)?);
+    let re = Regex::new(r"^(.*) \(\d*\)")?;
+    for movie in files {
+        match re.captures(movie.as_str()) {
+            Some(m) => println!("{:?}", &m[1]),
+            None => println!("No match for {:?}", movie)
+        }
+    }
+//    let requests = files.map(|movie| { search_movie(&client, movie) });
+//    let result = future::join_all(requests);
+//    println!("{:?}", core.run(result)?);
     Ok(())
 }
 
