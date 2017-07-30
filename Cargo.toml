@@ -6,7 +6,7 @@ authors = ["karsten"]
 [dependencies]
 docopt = "0.8"
 futures = "0.1"
-letterboxd = { path = "../letterboxd-rs" }
+letterboxd = { git = "https://github.com/boxdot/letterboxd-rs.git" }
 regex = "0.2"
 serde = "1.0"
 serde_derive = "1.0"
