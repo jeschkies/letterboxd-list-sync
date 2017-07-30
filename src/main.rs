@@ -20,11 +20,15 @@ const USAGE: &'static str = "
 Letterboxid Sync. Synchronizes movies in a folder with a list on Letterboxd.
 
 Usage:
-    letterboxd-sync <folder>
+    letterboxd-sync --pattern=<regex> <folder>
+
+Options:
+    --pattern=<regex>  The pattern used to extract the movie names.
 ";
 
 #[derive(Debug, Deserialize)]
 struct Args {
+    flag_pattern: String,
     arg_folder: String
 }
 
@@ -66,7 +70,7 @@ fn search_movie(client: &letterboxd::Client, movie: std::string::String) -> Box<
     client.search(request)
 }
 
-fn sync_list(path: &str) -> Result<(), Box<std::error::Error>> {
+fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
 
     let mut core = Core::new().unwrap();
@@ -76,7 +80,7 @@ fn sync_list(path: &str) -> Result<(), Box<std::error::Error>> {
 
     let files = list_files(path)?;
 
-    let re = Regex::new(r"^(.*) \(\d*\)")?;
+    let re = Regex::new(pattern)?;
     for movie in files {
         match re.captures(movie.as_str()) {
             Some(m) => println!("{:?}", &m[1]),
@@ -94,5 +98,5 @@ fn main() {
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    sync_list(args.arg_folder.as_str()).expect("Error!")
+    sync_list(args.arg_folder.as_str(), args.flag_pattern.as_str()).expect("Error!")
 }
