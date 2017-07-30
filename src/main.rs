@@ -13,6 +13,7 @@ use regex::Regex;
 use std::env;
 use std::fs;
 use std::io;
+use std::str::FromStr;
 
 use docopt::Docopt;
 
@@ -70,6 +71,13 @@ fn search_movie(client: &letterboxd::Client, movie: std::string::String) -> Box<
     client.search(request)
 }
 
+/// Extract movie names from file names with given pattern.
+fn extract_movie(pattern: &Regex, file_name: &str) -> Option<String> {
+    pattern.captures(file_name)
+        .and_then(|matches| matches.get(1))
+        .and_then(|m| String::from_str(m.as_str()).ok())
+}
+
 fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
 
@@ -81,15 +89,10 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     let files = list_files(path)?;
 
     let re = Regex::new(pattern)?;
-    for movie in files {
-        match re.captures(movie.as_str()) {
-            Some(m) => println!("{:?}", &m[1]),
-            None => println!("No match for {:?}", movie)
-        }
-    }
-//    let requests = files.map(|movie| { search_movie(&client, movie) });
-//    let result = future::join_all(requests);
-//    println!("{:?}", core.run(result)?);
+    let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
+    let requests = movie_names.map(|movie| search_movie(&client, movie));
+    let result = future::join_all(requests);
+    println!("{:?}", core.run(result)?);
     Ok(())
 }
 
