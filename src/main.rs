@@ -78,6 +78,13 @@ fn extract_movie(pattern: &Regex, file_name: &str) -> Option<String> {
         .and_then(|m| String::from_str(m.as_str()).ok())
 }
 
+fn film_id_from_response(response: &letterboxd::SearchResponse) -> Vec<String> {
+    response.items.iter().filter_map(|item| match item {
+        &letterboxd::AbstractSearchItem::FilmSearchItem { ref film, .. } => Some(film.id.clone()),
+        _ => None
+    }).collect::<Vec<String>>()
+}
+
 fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
 
@@ -91,7 +98,18 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     let re = Regex::new(pattern)?;
     let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
     let requests = movie_names.map(|movie| search_movie(&client, movie));
-    let result = future::join_all(requests);
+    let film_ids = future::join_all(requests).map(|responses| {
+        responses.iter().flat_map(film_id_from_response).collect::<Vec<_>>()
+    });
+
+    let result = film_ids.map(|ids| {
+        let new_entries = ids.iter()
+            .map(|id| letterboxd::ListUpdateEntry::new(id.clone()))
+            .collect();
+        let request = letterboxd::ListUpdateRequest::new(String::from("to-watch"), new_entries);
+        request
+    });
+
     println!("{:?}", core.run(result)?);
     Ok(())
 }
