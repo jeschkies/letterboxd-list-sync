@@ -78,9 +78,9 @@ fn extract_movie(pattern: &Regex, file_name: &str) -> Option<String> {
         .and_then(|m| String::from_str(m.as_str()).ok())
 }
 
-fn film_id_from_response(response: &letterboxd::SearchResponse) -> Vec<String> {
-    response.items.iter().filter_map(|item| match item {
-        &letterboxd::AbstractSearchItem::FilmSearchItem { ref film, .. } => Some(film.id.clone()),
+fn film_id_from_response(response: letterboxd::SearchResponse) -> Vec<String> {
+    response.items.into_iter().filter_map(|item| match item {
+        letterboxd::AbstractSearchItem::FilmSearchItem { film, .. } => Some(film.id),
         _ => None
     }).collect::<Vec<String>>()
 }
@@ -99,7 +99,7 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
     let requests = movie_names.map(|movie| search_movie(&client, movie));
     let film_ids = future::join_all(requests).map(|responses| {
-        responses.iter().flat_map(film_id_from_response).collect::<Vec<_>>()
+        responses.into_iter().flat_map(film_id_from_response).collect::<Vec<_>>()
     });
 
     let result = film_ids.map(|ids| {
