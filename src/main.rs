@@ -68,7 +68,7 @@ fn search_movie(client: &letterboxd::Client, movie: std::string::String) -> Box<
         include: None,
         contribution_type: None,
     };
-    client.search(request)
+    client.search(&request, None)
 }
 
 /// Extract movie names from file names with given pattern.
@@ -91,7 +91,12 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     let mut core = Core::new().unwrap();
     let key = env::var("LETTERBOXD_KEY")?;
     let secret = env::var("LETTERBOXD_SECRET")?;
+    let username = env::var("LB_USERNAME")?;
+    let password = env::var("LB_PASSWORD")?;
     let client = letterboxd::Client::new(&core.handle(), key, secret);
+
+    let get_token = client.auth(&username, &password);
+    let auth_token = core.run(get_token)?;
 
     let files = list_files(path)?;
 
@@ -103,14 +108,19 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     });
 
     let result = film_ids.map(|ids| {
-        let new_entries = ids.iter()
+        let mut request = letterboxd::ListUpdateRequest::new(String::from("to-watch"));
+        request.entries = ids.iter()
             .map(|id| letterboxd::ListUpdateEntry::new(id.clone()))
             .collect();
-        let request = letterboxd::ListUpdateRequest::new(String::from("to-watch"), new_entries);
+
         request
     });
 
-    println!("{:?}", core.run(result)?);
+    let r = result.map(|update_request| {
+        client.patch_list("to-watch", &update_request, &auth_token);
+    });
+
+    println!("{:?}", core.run(r)?);
     Ok(())
 }
 
