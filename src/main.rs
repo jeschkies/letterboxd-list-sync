@@ -68,7 +68,7 @@ fn search_movie(client: &letterboxd::Client, movie: std::string::String) -> Box<
         include: None,
         contribution_type: None,
     };
-    client.search(request)
+    client.search(&request, None)
 }
 
 /// Extract movie names from file names with given pattern.
@@ -91,23 +91,29 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     let mut core = Core::new().unwrap();
     let key = env::var("LETTERBOXD_KEY")?;
     let secret = env::var("LETTERBOXD_SECRET")?;
+    let username = env::var("LETTERBOXD_USERNAME")?;
+    let password = env::var("LETTERBOXD_PASSWORD")?;
+
     let client = letterboxd::Client::new(&core.handle(), key, secret);
+    let do_auth = client.auth(&username, &password);
+    let token = core.run(do_auth)?;
+    print!("Got token: {:?}", token);
 
     let files = list_files(path)?;
 
     let re = Regex::new(pattern)?;
     let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
     let requests = movie_names.map(|movie| search_movie(&client, movie));
-    let film_ids = future::join_all(requests).map(|responses| {
-        responses.into_iter().flat_map(film_id_from_response).collect::<Vec<_>>()
+    let film_ids = future::join_all(requests).map(|responses| -> Vec<_> {
+        responses.into_iter().flat_map(film_id_from_response).collect()
     });
 
-    let result = film_ids.map(|ids| {
-        let new_entries = ids.iter()
-            .map(|id| letterboxd::ListUpdateEntry::new(id.clone()))
-            .collect();
-        let request = letterboxd::ListUpdateRequest::new(String::from("to-watch"), new_entries);
-        request
+    let list_id = "1fKte";
+    let list_name = "to-watch";
+    let result = film_ids.and_then(|ids| {
+        let mut request = letterboxd::ListUpdateRequest::new(String::from(list_name));
+        request.entries = ids.into_iter().map(letterboxd::ListUpdateEntry::new).collect();
+        client.patch_list(list_id, &request, &token)
     });
 
     println!("{:?}", core.run(result)?);
