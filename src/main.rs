@@ -2,6 +2,7 @@
 
 #[macro_use]
 extern crate serde_derive;
+extern crate serde_json;
 extern crate docopt;
 extern crate futures;
 extern crate letterboxd;
@@ -14,6 +15,11 @@ use std::env;
 use std::fs;
 use std::io;
 use std::str::FromStr;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::error::Error;
+use std::sync::Arc;
+use std::cell::RefCell;
 
 use docopt::Docopt;
 
@@ -78,6 +84,55 @@ fn extract_movie(pattern: &Regex, file_name: &str) -> Option<String> {
         .and_then(|m| String::from_str(m.as_str()).ok())
 }
 
+struct MoviesCache {
+    path: PathBuf,
+    ids: HashMap<String, String>,
+}
+
+impl MoviesCache {
+    const DEFAULT_NAME: &'static str = ".movies.json";
+
+    pub fn new() -> Result<Self, Box<Error>> {
+        let pwd = env::current_dir()?;
+        Self::new_with_path(pwd.join(Self::DEFAULT_NAME))
+    }
+
+    pub fn new_with_path(path: PathBuf) -> Result<Self, Box<Error>> {
+        let file = fs::File::open(&path);
+        let ids = match file {
+            Ok(file) => serde_json::from_reader(file)?,
+            Err(err) => {
+                if err.kind() == io::ErrorKind::NotFound {
+                    HashMap::new()
+                } else {
+                    return Err(Box::new(err));
+                }
+            }
+        };
+
+        Ok(Self {
+            path: path,
+            ids: ids,
+        })
+    }
+
+    pub fn get(&self, movie: &str) -> Option<&String> {
+        self.ids.get(movie)
+    }
+
+    pub fn put(&mut self, movie: String, id: String) {
+        self.ids.insert(movie, id);
+    }
+
+    pub fn save(&self) -> Result<(), Box<std::error::Error>> {
+        let file = fs::OpenOptions::new().write(true).create(true).open(
+            &self.path,
+        )?;
+        Ok(serde_json::to_writer(file, &self.ids)?)
+    }
+}
+
+
 fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
 
@@ -89,11 +144,51 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     let files = list_files(path)?;
 
     let re = Regex::new(pattern)?;
-    let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
-    let requests = movie_names.map(|movie| search_movie(&client, movie));
-    let result = future::join_all(requests);
-    println!("{:?}", core.run(result)?);
-    Ok(())
+    let movie_names = files.filter_map(|file_name| extract_movie(&re, &file_name));
+
+    let movie_cache = Arc::new(RefCell::new(MoviesCache::new()?));
+    let movie_ids = movie_names.map(|movie|
+        -> Box<Future<Item=String, Error=letterboxd::Error>>
+    {
+        let borrowed_movie_cache = movie_cache.borrow();
+        let id = borrowed_movie_cache.get(&movie);
+        if id.is_some() {
+            return Box::new(future::ok(id.unwrap().clone()));
+        }
+
+        let movie_cache = movie_cache.clone();
+        Box::new(search_movie(&client, movie.clone()).and_then(
+            move |mut resp| {
+                if resp.items.is_empty() {
+                    println!("[W] Did not find id for movie: {}", movie);
+                    return Ok(String::new());
+                }
+
+                let cache = movie_cache.clone();
+
+                match resp.items.drain(0..1).next() {
+                    Some(letterboxd::AbstractSearchItem::FilmSearchItem { film, .. }) => {
+                        // put stuff in cache
+                        cache.borrow_mut().put(movie, film.id.clone());
+                        Ok(film.id)
+                    }
+                    _ => {
+                        println!("[W] Did not find id for movie: {}", movie);
+                        Ok(String::new())
+                    }
+                }
+            },
+        ))
+    });
+
+    let result = future::join_all(movie_ids);
+    let ids = core.run(result)?;
+    let ids: Vec<&String> = ids.iter().filter(|id| !id.is_empty()).collect();
+
+    println!("{:?}", ids);
+
+    let cache = movie_cache.borrow();
+    Ok(cache.save()?)
 }
 
 fn main() {
