@@ -68,7 +68,7 @@ fn search_movie(client: &letterboxd::Client, movie: std::string::String) -> Box<
         include: None,
         contribution_type: None,
     };
-    client.search(request)
+    client.search(&request, None)
 }
 
 /// Extract movie names from file names with given pattern.
