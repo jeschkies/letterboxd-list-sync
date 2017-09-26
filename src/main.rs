@@ -108,7 +108,7 @@ fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
         responses.into_iter().flat_map(film_id_from_response).collect()
     });
 
-    let list_id = "1fKte";
+    let list_id = "1dcmE";
     let list_name = "to-watch";
     let result = film_ids.and_then(|ids| {
         let mut request = letterboxd::ListUpdateRequest::new(String::from(list_name));
