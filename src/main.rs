@@ -68,7 +68,7 @@ fn search_movie(client: &letterboxd::Client, movie: std::string::String) -> Box<
         include: None,
         contribution_type: None,
     };
-    client.search(request)
+    client.search(&request, None)
 }
 
 /// Extract movie names from file names with given pattern.
@@ -78,20 +78,44 @@ fn extract_movie(pattern: &Regex, file_name: &str) -> Option<String> {
         .and_then(|m| String::from_str(m.as_str()).ok())
 }
 
+fn film_id_from_response(response: letterboxd::SearchResponse) -> Vec<String> {
+    response.items.into_iter().filter_map(|item| match item {
+        letterboxd::AbstractSearchItem::FilmSearchItem { film, .. } => Some(film.id),
+        _ => None
+    }).collect::<Vec<String>>()
+}
+
 fn sync_list(path: &str, pattern: &str) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
 
     let mut core = Core::new().unwrap();
     let key = env::var("LETTERBOXD_KEY")?;
     let secret = env::var("LETTERBOXD_SECRET")?;
+    let username = env::var("LETTERBOXD_USERNAME")?;
+    let password = env::var("LETTERBOXD_PASSWORD")?;
+
     let client = letterboxd::Client::new(&core.handle(), key, secret);
+    let do_auth = client.auth(&username, &password);
+    let token = core.run(do_auth)?;
+    print!("Got token: {:?}", token);
 
     let files = list_files(path)?;
 
     let re = Regex::new(pattern)?;
     let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
     let requests = movie_names.map(|movie| search_movie(&client, movie));
-    let result = future::join_all(requests);
+    let film_ids = future::join_all(requests).map(|responses| -> Vec<_> {
+        responses.into_iter().flat_map(film_id_from_response).collect()
+    });
+
+    let list_id = "1dcmE";
+    let list_name = "to-watch";
+    let result = film_ids.and_then(|ids| {
+        let mut request = letterboxd::ListUpdateRequest::new(String::from(list_name));
+        request.entries = ids.into_iter().map(letterboxd::ListUpdateEntry::new).collect();
+        client.patch_list(list_id, &request, &token)
+    });
+
     println!("{:?}", core.run(result)?);
     Ok(())
 }
