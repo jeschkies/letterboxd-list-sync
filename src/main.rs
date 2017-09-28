@@ -10,6 +10,7 @@ extern crate tokio_core;
 
 use futures::{Future, future};
 use regex::Regex;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io;
@@ -108,6 +109,7 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
 
     let files = list_files(path)?;
 
+    // Fetch ids for films on path.
     let re = Regex::new(pattern)?;
     let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
     let requests = movie_names.map(|movie| search_movie(&client, movie));
@@ -118,16 +120,37 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
             .collect()
     });
 
-    let list_name = "to-watch";
-    let result = film_ids.and_then(|ids| {
-        let mut request = letterboxd::ListUpdateRequest::new(String::from(list_name));
-        request.entries = ids.into_iter()
-            .map(letterboxd::ListUpdateEntry::new)
-            .collect();
-        client.patch_list(list_id, &request, &token)
+    // Fetch ids for films already on list.
+    let entry_request = letterboxd::ListEntriesRequest::default();
+    let saved_film_ids = client
+        .list_entries(list_id, &entry_request, Some(&token))
+        .map(|response| {
+            response
+                .items
+                .into_iter()
+                .map(|entry| entry.film.id)
+                .collect::<HashSet<String>>()
+        });
+
+    // Films to remove.
+    let to_delete = saved_film_ids.and_then(|saved|{
+        film_ids.map(|to_add| {
+            let set: HashSet<String> = to_add.iter().cloned().collect();
+            let to_remove = saved.difference(&set).into_iter().collect::<Vec<&String>>();
+            (to_remove, to_add)
+        })
     });
 
-    println!("{:?}", core.run(result)?);
+    let list_name = "to-watch";
+//    let result = film_ids.and_then(|ids| {
+//        let mut request = letterboxd::ListUpdateRequest::new(String::from(list_name));
+//        request.entries = ids.into_iter()
+//            .map(letterboxd::ListUpdateEntry::new)
+//            .collect();
+//        client.patch_list(list_id, &request, &token)
+//    });
+
+    println!("Result {:?}", core.run(to_delete)?);
     Ok(())
 }
 
