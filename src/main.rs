@@ -152,7 +152,7 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     let to_remove_and_add = saved_film_ids.and_then(|saved| {
         film_ids.map(move |to_add| {
             let set: HashSet<String> = to_add.iter().cloned().collect();
-            let to_remove = saved.difference(&set).cloned().collect::<Vec<String>>();
+            let to_remove: Vec<String> = saved.difference(&set).cloned().collect();
             (to_remove, to_add)
         })
     });
