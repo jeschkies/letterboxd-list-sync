@@ -90,7 +90,7 @@ fn film_id_from_response(response: letterboxd::SearchResponse) -> Vec<String> {
             letterboxd::AbstractSearchItem::FilmSearchItem { film, .. } => Some(film.id),
             _ => None,
         })
-        .collect::<Vec<String>>()
+        .collect()
 }
 
 /// Get film ids response of list entries request.
@@ -99,13 +99,15 @@ fn film_id_set_from_response(response: letterboxd::ListEntriesResponse) -> HashS
         .items
         .into_iter()
         .map(|entry| entry.film.id)
-        .collect::<HashSet<String>>()
+        .collect()
 }
 
-fn create_update_request(film_ids: (Vec<String>, Vec<String>)) -> letterboxd::ListUpdateRequest {
+fn create_update_request(
+    list_name: String,
+    film_ids: (Vec<String>, Vec<String>),
+) -> letterboxd::ListUpdateRequest {
     let (films_to_remove, films_to_add) = film_ids;
-    // TODO: Do not hardcode list name.
-    let mut request = letterboxd::ListUpdateRequest::new(String::from("to-watch"));
+    let mut request = letterboxd::ListUpdateRequest::new(list_name);
     request.entries = films_to_add
         .into_iter()
         .map(letterboxd::ListUpdateEntry::new)
@@ -158,11 +160,12 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     });
 
     // Update film list.
-    let result = to_remove_and_add.map(create_update_request).and_then(
-        |request| {
-            client.patch_list(list_id, &request, &token)
-        },
-    );
+    let list_name = "to-watch";
+    let result = to_remove_and_add
+        .map(|film_ids| {
+            create_update_request(String::from(list_name), film_ids)
+        })
+        .and_then(|request| client.patch_list(list_id, &request, &token));
 
     println!("Result {:?}", core.run(result)?);
     Ok(())
