@@ -10,6 +10,7 @@ extern crate tokio_core;
 
 use futures::{Future, future};
 use regex::Regex;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io;
@@ -89,7 +90,30 @@ fn film_id_from_response(response: letterboxd::SearchResponse) -> Vec<String> {
             letterboxd::AbstractSearchItem::FilmSearchItem { film, .. } => Some(film.id),
             _ => None,
         })
-        .collect::<Vec<String>>()
+        .collect()
+}
+
+/// Get film ids response of list entries request.
+fn film_id_set_from_response(response: letterboxd::ListEntriesResponse) -> HashSet<String> {
+    response
+        .items
+        .into_iter()
+        .map(|entry| entry.film.id)
+        .collect()
+}
+
+fn create_update_request(
+    list_name: String,
+    film_ids: (Vec<String>, Vec<String>),
+) -> letterboxd::ListUpdateRequest {
+    let (films_to_remove, films_to_add) = film_ids;
+    let mut request = letterboxd::ListUpdateRequest::new(list_name);
+    request.entries = films_to_add
+        .into_iter()
+        .map(letterboxd::ListUpdateEntry::new)
+        .collect();
+    request.films_to_remove = films_to_remove;
+    request
 }
 
 fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::error::Error>> {
@@ -108,6 +132,7 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
 
     let files = list_files(path)?;
 
+    // Fetch ids for films on path.
     let re = Regex::new(pattern)?;
     let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
     let requests = movie_names.map(|movie| search_movie(&client, movie));
@@ -118,16 +143,31 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
             .collect()
     });
 
-    let list_name = "to-watch";
-    let result = film_ids.and_then(|ids| {
-        let mut request = letterboxd::ListUpdateRequest::new(String::from(list_name));
-        request.entries = ids.into_iter()
-            .map(letterboxd::ListUpdateEntry::new)
-            .collect();
-        client.patch_list(list_id, &request, &token)
+    // Fetch ids for films already on list.
+    // TODO: The request just fetches the first X items not all.
+    let entry_request = letterboxd::ListEntriesRequest::default();
+    let saved_film_ids = client
+        .list_entries(list_id, &entry_request, Some(&token))
+        .map(film_id_set_from_response);
+
+    // Get disjunction of films to save and films to remove.
+    let to_remove_and_add = saved_film_ids.and_then(|saved| {
+        film_ids.map(move |to_add| {
+            let set: HashSet<String> = to_add.iter().cloned().collect();
+            let to_remove: Vec<String> = saved.difference(&set).cloned().collect();
+            (to_remove, to_add)
+        })
     });
 
-    println!("{:?}", core.run(result)?);
+    // Update film list.
+    let list_name = "to-watch";
+    let result = to_remove_and_add
+        .map(|film_ids| {
+            create_update_request(String::from(list_name), film_ids)
+        })
+        .and_then(|request| client.patch_list(list_id, &request, &token));
+
+    println!("Result {:?}", core.run(result)?);
     Ok(())
 }
 
