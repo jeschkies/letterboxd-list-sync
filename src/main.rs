@@ -102,15 +102,15 @@ fn film_id_set_from_response(response: letterboxd::ListEntriesResponse) -> HashS
         .collect()
 }
 
-struct FetchState {
+struct FetchState<'a> {
     request: letterboxd::ListEntriesRequest,
     entries: HashSet<String>,
-    list_id: &str,
-    client: &letterboxd::Client,
-    token: &letterboxd::AccessToken,
+    list_id: &'a str,
+    client: &'a letterboxd::Client,
+    token: &'a letterboxd::AccessToken,
 }
 
-fn fetch_saved_films(list_id: &str, client: &letterboxd::Client, token: &letterboxd::AccessToken) -> Box<Future<Item=HashSet<String>, Error=letterboxd::Error>> {
+fn fetch_saved_films<'a>(list_id: &'a str, client: &'a letterboxd::Client, token: &'a letterboxd::AccessToken) -> Box<Future<Item=HashSet<String>, Error=letterboxd::Error>> {
     /*
     let entry_request = letterboxd::ListEntriesRequest::default();
     let f = client
@@ -118,10 +118,10 @@ fn fetch_saved_films(list_id: &str, client: &letterboxd::Client, token: &letterb
         .map(film_id_set_from_response);
     Box::new(f)*/
 
-    fn fetch(state: FetchState) {
+    fn fetch(state: FetchState) ->  {
       state.client
           .list_entries(state.list_id, &state.request, Some(state.token))
-          .map(|response| match response.cursor {
+          .map(|response| match response.next {
                 None => {
                     state.entries.extend(film_id_set_from_response(response));
                     future::Loop::Break(state.entries) },
@@ -130,7 +130,7 @@ fn fetch_saved_films(list_id: &str, client: &letterboxd::Client, token: &letterb
                     state.request.cursor = Some(cursor);
                     future::Loop::Continue(state) },
           })
-      }
+      };
 
     let entry_request = letterboxd::ListEntriesRequest::default();
     let state = FetchState {
@@ -140,7 +140,7 @@ fn fetch_saved_films(list_id: &str, client: &letterboxd::Client, token: &letterb
         client: client,
         token: token,
     };
-    future::loop_fn(state, fetch)
+    Box::new(future::loop_fn(state, fetch))
 }
 
 fn create_update_request(
