@@ -102,6 +102,47 @@ fn film_id_set_from_response(response: letterboxd::ListEntriesResponse) -> HashS
         .collect()
 }
 
+struct FetchState {
+    request: letterboxd::ListEntriesRequest,
+    entries: HashSet<String>,
+    list_id: &str,
+    client: &letterboxd::Client,
+    token: &letterboxd::AccessToken,
+}
+
+fn fetch_saved_films(list_id: &str, client: &letterboxd::Client, token: &letterboxd::AccessToken) -> Box<Future<Item=HashSet<String>, Error=letterboxd::Error>> {
+    /*
+    let entry_request = letterboxd::ListEntriesRequest::default();
+    let f = client
+        .list_entries(list_id, &entry_request, Some(token))
+        .map(film_id_set_from_response);
+    Box::new(f)*/
+
+    fn fetch(state: FetchState) {
+      state.client
+          .list_entries(state.list_id, &state.request, Some(state.token))
+          .map(|response| match response.cursor {
+                None => {
+                    state.entries.extend(film_id_set_from_response(response));
+                    future::Loop::Break(state.entries) },
+                Some(cursor) => {
+                    state.request = letterboxd::ListEntriesRequest::default();
+                    state.request.cursor = Some(cursor);
+                    future::Loop::Continue(state) },
+          })
+      }
+
+    let entry_request = letterboxd::ListEntriesRequest::default();
+    let state = FetchState {
+        request: letterboxd::ListEntriesRequest::default(),
+        entries: HashSet::new(),
+        list_id: list_id,
+        client: client,
+        token: token,
+    };
+    future::loop_fn(state, fetch)
+}
+
 fn create_update_request(
     list_name: String,
     film_ids: (Vec<String>, Vec<String>),
@@ -145,10 +186,7 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
 
     // Fetch ids for films already on list.
     // TODO: The request just fetches the first X items not all.
-    let entry_request = letterboxd::ListEntriesRequest::default();
-    let saved_film_ids = client
-        .list_entries(list_id, &entry_request, Some(&token))
-        .map(film_id_set_from_response);
+    let saved_film_ids = fetch_saved_films(list_id, &client, &token);
 
     // Get disjunction of films to save and films to remove.
     let to_remove_and_add = saved_film_ids.and_then(|saved| {
