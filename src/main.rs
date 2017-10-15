@@ -94,53 +94,44 @@ fn film_id_from_response(response: letterboxd::SearchResponse) -> Vec<String> {
 }
 
 /// Get film ids response of list entries request.
-fn film_id_set_from_response(response: letterboxd::ListEntriesResponse) -> HashSet<String> {
-    response
-        .items
-        .into_iter()
-        .map(|entry| entry.film.id)
-        .collect()
+fn film_id_set_from_response(entries: Vec<letterboxd::ListEntry>) -> HashSet<String> {
+    entries.into_iter().map(|entry| entry.film.id).collect()
 }
 
-struct FetchState<'a> {
-    request: letterboxd::ListEntriesRequest,
-    entries: HashSet<String>,
+
+fn fetch_saved_films<'a>(
     list_id: &'a str,
     client: &'a letterboxd::Client,
     token: &'a letterboxd::AccessToken,
-}
+) -> impl future::Future<Item = HashSet<String>, Error = letterboxd::Error> + 'a {
 
-fn fetch_saved_films<'a>(list_id: &'a str, client: &'a letterboxd::Client, token: &'a letterboxd::AccessToken) -> Box<Future<Item=HashSet<String>, Error=letterboxd::Error>> {
-    /*
-    let entry_request = letterboxd::ListEntriesRequest::default();
-    let f = client
-        .list_entries(list_id, &entry_request, Some(token))
-        .map(film_id_set_from_response);
-    Box::new(f)*/
+    // The state structure for the resurive loop.
+    struct FetchState {
+        request: letterboxd::ListEntriesRequest,
+        entries: HashSet<String>,
+    }
 
-    fn fetch(state: FetchState) ->  {
-      state.client
-          .list_entries(state.list_id, &state.request, Some(state.token))
-          .map(|response| match response.next {
-                None => {
-                    state.entries.extend(film_id_set_from_response(response));
-                    future::Loop::Break(state.entries) },
-                Some(cursor) => {
-                    state.request = letterboxd::ListEntriesRequest::default();
-                    state.request.cursor = Some(cursor);
-                    future::Loop::Continue(state) },
-          })
-      };
-
-    let entry_request = letterboxd::ListEntriesRequest::default();
-    let state = FetchState {
+    let initial_state = FetchState {
         request: letterboxd::ListEntriesRequest::default(),
         entries: HashSet::new(),
-        list_id: list_id,
-        client: client,
-        token: token,
     };
-    Box::new(future::loop_fn(state, fetch))
+    future::loop_fn(initial_state, move |mut state| {
+        client
+            .list_entries(list_id, &state.request, Some(token))
+            .map(|response| {
+                state.entries.extend(
+                    film_id_set_from_response(response.items),
+                );
+                match response.next {
+                    None => future::Loop::Break(state.entries),
+                    Some(cursor) => {
+                        state.request = letterboxd::ListEntriesRequest::default();
+                        state.request.cursor = Some(cursor);
+                        future::Loop::Continue(state)
+                    }
+                }
+            })
+    })
 }
 
 fn create_update_request(
@@ -185,7 +176,6 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     });
 
     // Fetch ids for films already on list.
-    // TODO: The request just fetches the first X items not all.
     let saved_film_ids = fetch_saved_films(list_id, &client, &token);
 
     // Get disjunction of films to save and films to remove.
