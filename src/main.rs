@@ -111,10 +111,27 @@ fn fetch_saved_films<'a>(
         entries: HashSet<String>,
     }
 
+    // Decides whether to continue or break query loop.
+    fn continue_or_break(
+        next: Option<letterboxd::Cursor>,
+        mut state: FetchState,
+    ) -> future::Loop<HashSet<String>, FetchState> {
+        match next {
+            None => future::Loop::Break(state.entries),
+            Some(cursor) => {
+                state.request = letterboxd::ListEntriesRequest::default();
+                state.request.cursor = Some(cursor);
+                future::Loop::Continue(state)
+            }
+        }
+    }
+
     let initial_state = FetchState {
         request: letterboxd::ListEntriesRequest::default(),
         entries: HashSet::new(),
     };
+
+    // Construct actual query loop.
     future::loop_fn(initial_state, move |mut state| {
         client
             .list_entries(list_id, &state.request, Some(token))
@@ -122,14 +139,7 @@ fn fetch_saved_films<'a>(
                 state.entries.extend(
                     film_id_set_from_response(response.items),
                 );
-                match response.next {
-                    None => future::Loop::Break(state.entries),
-                    Some(cursor) => {
-                        state.request = letterboxd::ListEntriesRequest::default();
-                        state.request.cursor = Some(cursor);
-                        future::Loop::Continue(state)
-                    }
-                }
+                continue_or_break(response.next, state)
             })
     })
 }
