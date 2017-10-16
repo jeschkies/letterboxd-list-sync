@@ -112,6 +112,7 @@ fn fetch_saved_films<'a>(
             Some(cursor) => {
                 state.request = letterboxd::ListEntriesRequest::default();
                 state.request.cursor = Some(cursor);
+                state.request.per_page = Some(100);
                 future::Loop::Continue(state)
             }
         }
