@@ -235,7 +235,10 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
         }
     });
     let film_ids = future::join_all(film_ids_req).map(|response| -> HashMap<String, String> {
-        response.into_iter().collect()
+        response
+            .into_iter()
+            .filter(|&(_, ref id)| !id.is_empty())
+            .collect()
     });
 
     // Fetch ids for films already on list.
