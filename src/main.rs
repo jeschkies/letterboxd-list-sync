@@ -246,12 +246,13 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
 
     // Get disjunction of films to save and films to remove.
     let to_remove_and_add = saved_film_ids.and_then(|saved| {
-        film_ids.map(move |to_add| {
-            if let Err(err) = save_ids_list_to_cache(&to_add) {
+        film_ids.map(move |film_ids| {
+            if let Err(err) = save_ids_list_to_cache(&film_ids) {
                 println!("[W] Could not save film ids to cache: {:?}", err);
             }
-            let to_add: HashSet<String> = to_add.values().cloned().collect();
-            let to_remove: Vec<String> = saved.difference(&to_add).cloned().collect();
+            let ids: HashSet<String> = film_ids.values().cloned().collect();
+            let to_add: Vec<String> = ids.difference(&saved).cloned().collect();
+            let to_remove: Vec<String> = saved.difference(&ids).cloned().collect();
             (to_remove, to_add)
         })
     });
@@ -260,7 +261,7 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     let list_name = "to-watch";
     let result = to_remove_and_add
         .map(|(to_remove, to_add)| if !to_remove.is_empty() ||
-            to_add.len() != film_ids_cache.len()
+            !to_add.is_empty()
         {
             Some(create_update_request(
                 String::from(list_name),
@@ -271,6 +272,11 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
             None
         })
         .and_then(|request| if let Some(request) = request {
+            println!(
+                "Updating list: {} to add, {} to remove",
+                request.entries.len(),
+                request.films_to_remove.len()
+            );
             Some(client.patch_list(list_id, &request, &token))
         } else {
             println!("List up to date. Nothing to do.");
