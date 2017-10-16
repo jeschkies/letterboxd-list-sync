@@ -259,10 +259,23 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     // Update film list.
     let list_name = "to-watch";
     let result = to_remove_and_add
-        .map(|(to_remove, to_add)| {
-            create_update_request(String::from(list_name), to_remove, to_add.into_iter())
+        .map(|(to_remove, to_add)| if !to_remove.is_empty() ||
+            to_add.len() != film_ids_cache.len()
+        {
+            Some(create_update_request(
+                String::from(list_name),
+                to_remove,
+                to_add.into_iter(),
+            ))
+        } else {
+            None
         })
-        .and_then(|request| client.patch_list(list_id, &request, &token));
+        .and_then(|request| if let Some(request) = request {
+            Some(client.patch_list(list_id, &request, &token))
+        } else {
+            println!("List up to date. Nothing to do.");
+            None
+        });
 
     println!("Result {:?}", core.run(result)?);
     Ok(())
