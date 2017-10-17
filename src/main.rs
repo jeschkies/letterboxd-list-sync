@@ -291,7 +291,7 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     });
 
     // Update film list.
-    let list_name = "to-watch";
+    let list_name = "Collection";
     let result = to_remove_and_add
         .map(|(to_remove, to_add)| if !to_remove.is_empty() ||
             !to_add.is_empty()
