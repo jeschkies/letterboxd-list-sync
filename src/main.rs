@@ -181,6 +181,75 @@ fn save_ids_list_to_cache(ids: &HashMap<String, String>) -> Result<(), Box<std::
     Ok(serde_json::to_writer(file, &ids)?)
 }
 
+struct FilmDetails {
+    name: String,
+    id: Option<String>,
+}
+
+impl FilmDetails {
+    fn new(name: String, id: Option<String>) -> Self {
+        Self { name: name, id: id }
+    }
+}
+
+impl std::iter::FromIterator<FilmDetails> for HashMap<String, String> {
+    fn from_iter<I: IntoIterator<Item = FilmDetails>>(iter: I) -> Self {
+        iter.into_iter()
+            .filter_map(|film_details| if let Some(id) = film_details.id {
+                Some((film_details.name, id))
+            } else {
+                None
+            })
+            .collect()
+    }
+}
+
+/// Resolve movie ids from movie names by first looking in the given cache, and then, if not found,
+/// by making a request through letterboxd api.
+fn resolve_film_ids<'a, I: IntoIterator<Item = String> + 'a>(
+    movie_names: I,
+    film_ids_cache: &'a HashMap<String, String>,
+    client: &'a letterboxd::Client,
+) -> impl future::Future<Item = HashMap<String, String>, Error = letterboxd::Error> + 'a
+where
+{
+    let film_ids_req = movie_names.into_iter().map(move |movie| -> Box<
+        Future<
+            Item = FilmDetails,
+            Error = letterboxd::Error,
+        >,
+    > {
+        let id = film_ids_cache.get(&movie);
+        // TODO: Try to remove Box here
+        if let Some(id) = id {
+            Box::new(future::ok(FilmDetails::new(movie, Some(id.clone()))))
+        } else {
+            Box::new(search_movie(&client, movie.clone()).and_then(
+                move |mut resp| {
+                    if resp.items.is_empty() {
+                        println!("[W] Did not find id for movie: {}", movie);
+                        return Ok(FilmDetails::new(movie, None));
+                    }
+
+                    match resp.items.drain(0..1).next() {
+                        Some(letterboxd::AbstractSearchItem::FilmSearchItem { film, .. }) => {
+                            println!("Resolved id of {}: {}", movie, film.id);
+                            Ok(FilmDetails::new(movie, Some(film.id)))
+                        }
+                        _ => {
+                            println!("[W] Did not find id for movie: {}", movie);
+                            Ok(FilmDetails::new(movie, None))
+                        }
+                    }
+                },
+            ))
+        }
+    });
+    future::join_all(film_ids_req).map(|response| -> HashMap<String, String> {
+        response.into_iter().collect()
+    })
+}
+
 fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
 
@@ -201,46 +270,9 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     let re = Regex::new(pattern)?;
     let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
 
-    // Load ids either from cache file or make a request to get an id
+    // Resolve movie ids either from cache or by requesting these
     let film_ids_cache = load_ids_list_from_cache()?;
-    let film_ids_req = movie_names.map(|movie| -> Box<
-        Future<
-            Item = (String, String),
-            Error = letterboxd::Error,
-        >,
-    > {
-        let id = film_ids_cache.get(&movie);
-        // TODO: Try to remove Box here
-        if let Some(id) = id {
-            Box::new(future::ok((movie, id.clone())))
-        } else {
-            Box::new(search_movie(&client, movie.clone()).and_then(
-                move |mut resp| {
-                    if resp.items.is_empty() {
-                        println!("[W] Did not find id for movie: {}", movie);
-                        return Ok((movie, String::new()));
-                    }
-
-                    match resp.items.drain(0..1).next() {
-                        Some(letterboxd::AbstractSearchItem::FilmSearchItem { film, .. }) => {
-                            println!("Resolved id of {}: {}", movie, film.id);
-                            Ok((movie, film.id))
-                        }
-                        _ => {
-                            println!("[W] Did not find id for movie: {}", movie);
-                            Ok((movie, String::new()))
-                        }
-                    }
-                },
-            ))
-        }
-    });
-    let film_ids = future::join_all(film_ids_req).map(|response| -> HashMap<String, String> {
-        response
-            .into_iter()
-            .filter(|&(_, ref id)| !id.is_empty())
-            .collect()
-    });
+    let film_ids = resolve_film_ids(movie_names, &film_ids_cache, &client);
 
     // Fetch ids for films already on list.
     let saved_film_ids = fetch_saved_films(list_id, &client, &token);
