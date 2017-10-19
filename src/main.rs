@@ -52,6 +52,17 @@ struct Files {
 }
 
 impl Files {
+
+    pub fn new(path: PathBuf, recursively: bool) -> io::Result<Files> {
+        fs::read_dir(path).map(|entries|{
+            Files {
+                entries: entries,
+                stack: Vec::new(),
+                recursively: recursively,
+            }
+        })
+    }
+
     /// Returns the next file in the next dir on the stack if any.
     fn next_in_dir(&mut self) -> Option<String> {
         self.stack.pop().and_then(|dir| {
@@ -107,13 +118,7 @@ fn list_files(dir: &str, recursively: bool) -> Result<Vec<String>, Box<std::erro
         return Ok(vec![String::from(dir)]);
     }
 
-    let entries = fs::read_dir(path)?;
-    let files = Files {
-        entries: entries,
-        stack: Vec::new(),
-        recursively: recursively,
-    };
-
+    let files = Files::new(path.to_path_buf(), recursively)?;
     Ok(files.collect())
 }
 
