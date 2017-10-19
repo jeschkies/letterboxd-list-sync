@@ -17,6 +17,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::str::FromStr;
+use std::path::{Path, PathBuf};
 
 use docopt::Docopt;
 
@@ -24,10 +25,11 @@ const USAGE: &'static str = "
 Letterboxid Sync. Synchronizes movies in a folder with a list on Letterboxd.
 
 Usage:
-    letterboxd-sync --pattern=<regex> <list-id> <folder>
+    letterboxd-sync [--recursive] --pattern=<regex> <list-id> <folder>
 
 Options:
     --pattern=<regex>  The pattern used to extract the movie names.
+    -r --recursive     Search for movies in the given folder recursively.
 ";
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +37,7 @@ struct Args {
     flag_pattern: String,
     arg_list_id: String,
     arg_folder: String,
+    flag_recursive: bool,
 }
 
 /// Returns true if entry is a file, false otherwise or on error.
@@ -42,28 +45,86 @@ fn is_file(entry: &fs::DirEntry) -> bool {
     entry.metadata().ok().map(|m| m.is_file()).unwrap_or(false)
 }
 
-/// Used in to filter_map entries into files. Directories are sorted out.
-fn into_file(entry: io::Result<fs::DirEntry>) -> Option<fs::DirEntry> {
-    entry.ok().and_then(
-        |e| if is_file(&e) { Some(e) } else { None },
-    )
+struct Files {
+    entries: fs::ReadDir,
+    stack: Vec<PathBuf>,
+    recursively: bool,
+}
+
+impl Files {
+    pub fn new(path: PathBuf, recursively: bool) -> io::Result<Files> {
+        fs::read_dir(path).map(|entries| {
+            Files {
+                entries: entries,
+                stack: Vec::new(),
+                recursively: recursively,
+            }
+        })
+    }
+
+    /// Returns the next file in the next dir on the stack if any.
+    fn next_in_dir(&mut self) -> Option<String> {
+        self.stack.pop().and_then(|dir| {
+            match fs::read_dir(&dir) {
+                Ok(new_entries) => self.entries = new_entries,
+                Err(_) => println!("[W] Could not read files in {:?}", dir),
+            }
+            self.next()
+        })
+    }
+
+    /// Return file of possible entry or move on to next.
+    fn handle_next(&mut self, entry: fs::DirEntry) -> Option<String> {
+        let path = entry.path();
+        if is_file(&entry) {
+            match entry.file_name().into_string() {
+                Ok(filename) => Some(filename),
+                Err(filename) => {
+                    println!("[W] Could not retrieve filename of {:?}", filename);
+                    self.next()
+                }
+            }
+        } else if self.recursively && path.is_dir() {
+            self.stack.push(path.to_path_buf());
+            self.next()
+        } else {
+            None
+        }
+    }
+}
+
+impl Iterator for Files {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        match self.entries.next() {
+            None => self.next_in_dir(),
+            Some(maybe_entry) => {
+                if let Ok(entry) = maybe_entry {
+                    self.handle_next(entry)
+                } else {
+                    self.next()
+                }
+            }
+        }
+    }
 }
 
 /// List all files in dir.
-fn list_files(
-    path: &str,
-) -> Result<impl Iterator<Item = std::string::String>, Box<std::error::Error>> {
-    let dir = fs::read_dir(path)?;
-    let files = dir.filter_map(into_file).filter_map(|e| {
-        e.file_name().into_string().ok()
-    });
-    Ok(files)
+fn list_files(dir: &str, recursively: bool) -> Result<Vec<String>, Box<std::error::Error>> {
+    let path = Path::new(dir);
+    if !path.is_dir() {
+        return Ok(vec![String::from(dir)]);
+    }
+
+    let files = Files::new(path.to_path_buf(), recursively)?;
+    Ok(files.collect())
 }
 
 /// Search movie on letterbox.
 fn search_movie(
     client: &letterboxd::Client,
-    movie: std::string::String,
+    movie: String,
 ) -> Box<Future<Item = letterboxd::SearchResponse, Error = letterboxd::Error>> {
     let request = letterboxd::SearchRequest {
         cursor: None,
@@ -250,7 +311,12 @@ where
     })
 }
 
-fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::error::Error>> {
+fn sync_list(
+    path: &str,
+    pattern: &str,
+    list_id: &str,
+    recursively: bool,
+) -> Result<(), Box<std::error::Error>> {
     use tokio_core::reactor::Core;
 
     let mut core = Core::new().unwrap();
@@ -264,11 +330,13 @@ fn sync_list(path: &str, pattern: &str, list_id: &str) -> Result<(), Box<std::er
     let token = core.run(do_auth)?;
     println!("Got token: {:?}", token);
 
-    let files = list_files(path)?;
+    let files = list_files(path, recursively)?;
 
     // Collect all movie names
     let re = Regex::new(pattern)?;
-    let movie_names = files.filter_map(|file_name| extract_movie(&re, file_name.as_str()));
+    let movie_names = files.into_iter().filter_map(|file_name| {
+        extract_movie(&re, file_name.as_str())
+    });
 
     // Resolve movie ids either from cache or by requesting these
     let film_ids_cache = load_ids_list_from_cache()?;
@@ -329,5 +397,6 @@ fn main() {
         args.arg_folder.as_str(),
         args.flag_pattern.as_str(),
         args.arg_list_id.as_str(),
+        args.flag_recursive,
     ).expect("Error!")
 }
