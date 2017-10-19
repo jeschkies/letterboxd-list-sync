@@ -17,7 +17,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::str::FromStr;
-use std::path::{ Path, PathBuf };
+use std::path::{Path, PathBuf};
 
 use docopt::Docopt;
 
@@ -46,17 +46,47 @@ fn is_file(entry: &fs::DirEntry) -> bool {
 }
 
 /// List all files in dir.
-fn list_files(path: &str, recursively: bool) -> Result<Vec<String>, Box<std::error::Error>> {
-    let path = Path::new(path);
-    let mut files = Vec::new();
+fn list_files(dir: &str, recursively: bool) -> Result<Vec<String>, Box<std::error::Error>> {
+    let path = Path::new(dir);
     if !path.is_dir() {
-        return Ok(files);
+        return Ok(vec![String::from(dir)]);
     }
 
     struct Files {
         entries: fs::ReadDir,
         stack: Vec<PathBuf>,
         recursively: bool,
+    }
+
+    impl Files {
+        /// Returns the next file in the next dir on the stack.
+        fn next_in_dir(&mut self) -> Option<String> {
+            let dir = self.stack.pop().unwrap();
+            match fs::read_dir(&dir) {
+                Ok(new_entries) => self.entries = new_entries,
+                Err(_) => println!("[W] Could not read files in {:?}", dir),
+            }
+            self.next()
+        }
+
+        /// Returns file of possible entry or move on to next.
+        fn handle_next(&mut self, entry: fs::DirEntry) -> Option<String> {
+            let path = entry.path();
+            if is_file(&entry) {
+                match entry.file_name().into_string() {
+                    Ok(filename) => Some(filename),
+                    Err(filename) => {
+                        println!("[W] Could not retrieve filename of {:?}", filename);
+                        self.next()
+                    }
+                }
+            } else if self.recursively && path.is_dir() {
+                self.stack.push(path.to_path_buf());
+                self.next()
+            } else {
+                None
+            }
+        }
     }
 
     impl Iterator for Files {
@@ -68,31 +98,12 @@ fn list_files(path: &str, recursively: bool) -> Result<Vec<String>, Box<std::err
                     if self.stack.is_empty() {
                         None
                     } else {
-                        let dir = self.stack.pop().unwrap();
-                        match fs::read_dir(&dir) {
-                            Ok(new_entries) => self.entries = new_entries,
-                            Err(_) => println!("[W] Could not read files in {:?}", dir),
-                        }
-                        self.next()
+                        self.next_in_dir()
                     }
-                },
+                }
                 Some(maybe_entry) => {
                     if let Ok(entry) = maybe_entry {
-                        let path = entry.path();
-                        if is_file(&entry) {
-                            match entry.file_name().into_string() {
-                                Ok(filename) => Some(filename),
-                                Err(filename) => {
-                                    println!("[W] Could not retrieve filename of {:?}", filename);
-                                    self.next()
-                                }
-                            }
-                        } else if self.recursively && path.is_dir() {
-                            self.stack.push(path.to_path_buf());
-                            self.next()
-                        } else {
-                            None
-                        }
+                        self.handle_next(entry)
                     } else {
                         self.next()
                     }
@@ -100,26 +111,6 @@ fn list_files(path: &str, recursively: bool) -> Result<Vec<String>, Box<std::err
             }
         }
     }
-
-    /*
-    let mut stack = vec![path.to_path_buf()];
-    while !stack.is_empty() {
-        let dir = stack.pop().unwrap();
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if recursively && path.is_dir() {
-                stack.push(path.to_path_buf());
-            } else if is_file(&entry) {
-                if let Some(filename) = entry.file_name().into_string().ok() {
-                    files.push(filename);
-                } else {
-                    println!("[W] Could not retrieve filename of {:?}", entry.file_name())
-                }
-            }
-        }
-    }*/
-
 
     let entries = fs::read_dir(path)?;
     let files = Files {
@@ -341,9 +332,6 @@ fn sync_list(
     println!("Got token: {:?}", token);
 
     let files = list_files(path, recursively)?;
-    println!("files: {:?}", files);
-    return Ok(());
-
 
     // Collect all movie names
     let re = Regex::new(pattern)?;
