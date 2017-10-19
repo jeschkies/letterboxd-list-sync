@@ -52,9 +52,8 @@ struct Files {
 }
 
 impl Files {
-
     pub fn new(path: PathBuf, recursively: bool) -> io::Result<Files> {
-        fs::read_dir(path).map(|entries|{
+        fs::read_dir(path).map(|entries| {
             Files {
                 entries: entries,
                 stack: Vec::new(),
