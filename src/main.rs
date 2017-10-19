@@ -17,7 +17,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::str::FromStr;
-use std::path::Path;
+use std::path::{ Path, PathBuf };
 
 use docopt::Docopt;
 
@@ -53,6 +53,55 @@ fn list_files(path: &str, recursively: bool) -> Result<Vec<String>, Box<std::err
         return Ok(files);
     }
 
+    struct Files {
+        entries: fs::ReadDir,
+        stack: Vec<PathBuf>,
+        recursively: bool,
+    }
+
+    impl Iterator for Files {
+        type Item = String;
+
+        fn next(&mut self) -> Option<String> {
+            match self.entries.next() {
+                None => {
+                    if self.stack.is_empty() {
+                        None
+                    } else {
+                        let dir = self.stack.pop().unwrap();
+                        match fs::read_dir(&dir) {
+                            Ok(new_entries) => self.entries = new_entries,
+                            Err(_) => println!("[W] Could not read files in {:?}", dir),
+                        }
+                        self.next()
+                    }
+                },
+                Some(maybe_entry) => {
+                    if let Ok(entry) = maybe_entry {
+                        let path = entry.path();
+                        if is_file(&entry) {
+                            match entry.file_name().into_string() {
+                                Ok(filename) => Some(filename),
+                                Err(filename) => {
+                                    println!("[W] Could not retrieve filename of {:?}", filename);
+                                    self.next()
+                                }
+                            }
+                        } else if self.recursively && path.is_dir() {
+                            self.stack.push(path.to_path_buf());
+                            self.next()
+                        } else {
+                            None
+                        }
+                    } else {
+                        self.next()
+                    }
+                }
+            }
+        }
+    }
+
+    /*
     let mut stack = vec![path.to_path_buf()];
     while !stack.is_empty() {
         let dir = stack.pop().unwrap();
@@ -69,9 +118,17 @@ fn list_files(path: &str, recursively: bool) -> Result<Vec<String>, Box<std::err
                 }
             }
         }
-    }
+    }*/
 
-    Ok(files)
+
+    let entries = fs::read_dir(path)?;
+    let files = Files {
+        entries: entries,
+        stack: Vec::new(),
+        recursively: recursively,
+    };
+
+    Ok(files.collect())
 }
 
 /// Search movie on letterbox.
@@ -284,6 +341,9 @@ fn sync_list(
     println!("Got token: {:?}", token);
 
     let files = list_files(path, recursively)?;
+    println!("files: {:?}", files);
+    return Ok(());
+
 
     // Collect all movie names
     let re = Regex::new(pattern)?;
