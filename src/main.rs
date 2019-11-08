@@ -1,7 +1,7 @@
-use docopt::Docopt;
+use ansi_term::Color::Red;
 use futures::{future, Future};
 use regex::Regex;
-use serde::Deserialize;
+use structopt::StructOpt;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -10,23 +10,19 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-const USAGE: &'static str = "
-Letterboxid Sync. Synchronizes movies in a folder with a list on Letterboxd.
-
-Usage:
-    letterboxd-sync [--recursive] --pattern=<regex> <list-id> <folder>
-
-Options:
-    --pattern=<regex>  The pattern used to extract the movie names.
-    -r --recursive     Search for movies in the given folder recursively.
-";
-
-#[derive(Debug, Deserialize)]
+/// Letterboxid Sync. Synchronizes movies in a folder with a list on Letterboxd.
+#[derive(Debug, StructOpt)]
 struct Args {
-    flag_pattern: String,
-    arg_list_id: String,
-    arg_folder: String,
-    flag_recursive: bool,
+    /// The pattern used to extract the movie names.
+    #[structopt(long)]
+    pattern: String,
+    /// Search for movies in the given folder recursively.
+    #[structopt(short, long)]
+    recursive: bool,
+    /// Letterboxd ID of the list
+    list_id: String,
+    /// Folder containing the movies
+    folder: String,
 }
 
 /// Returns true if entry is a file, false otherwise or on error.
@@ -378,16 +374,20 @@ fn sync_list(
     Ok(())
 }
 
-fn main() {
-    let args: Args = Docopt::new(USAGE)
-        .and_then(|d| d.deserialize())
-        .unwrap_or_else(|e| e.exit());
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::from_args();
 
     sync_list(
-        args.arg_folder.as_str(),
-        args.flag_pattern.as_str(),
-        args.arg_list_id.as_str(),
-        args.flag_recursive,
+        args.folder.as_str(),
+        args.pattern.as_str(),
+        args.list_id.as_str(),
+        args.recursive,
     )
-    .expect("Error!")
+}
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("{} {}", Red.paint("Error:"), e);
+        std::process::exit(1);
+    }
 }
