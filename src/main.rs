@@ -1,41 +1,29 @@
-#[macro_use]
-extern crate serde_derive;
-extern crate docopt;
-extern crate futures;
-extern crate letterboxd;
-extern crate regex;
-extern crate serde_json;
-extern crate tokio_core;
-
 use futures::{future, Future};
 use regex::Regex;
+use structopt::StructOpt;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 
-use docopt::Docopt;
-
-const USAGE: &str = "
-Letterboxid Sync. Synchronizes movies in a folder with a list on Letterboxd.
-
-Usage:
-    letterboxd-sync [--recursive] --pattern=<regex> <list-id> <folder>
-
-Options:
-    --pattern=<regex>  The pattern used to extract the movie names.
-    -r --recursive     Search for movies in the given folder recursively.
-";
-
-#[derive(Debug, Deserialize)]
+/// Letterboxid Sync.
+///
+/// Synchronizes movies in a folder with a list on Letterboxd.
+#[derive(Debug, StructOpt)]
 struct Args {
-    flag_pattern: String,
-    arg_list_id: String,
-    arg_folder: String,
-    flag_recursive: bool,
+    /// Disable recursive search for movies in the given folder.
+    #[structopt(long, short)]
+    no_recursive: bool,
+    /// Regex pattern used to extract the movie names.
+    #[structopt(long)]
+    pattern: String,
+    /// ID of the Letterboxd list to sync the movies with.
+    list_id: String,
+    /// The directory to scan movies in.
+    directory: PathBuf,
 }
 
 /// Returns true if entry is a file, false otherwise or on error.
@@ -107,13 +95,12 @@ impl Iterator for Files {
 }
 
 /// List all files in dir.
-fn list_files(dir: &str, recursively: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let path = Path::new(dir);
+fn list_files(path: PathBuf, recursively: bool) -> anyhow::Result<Vec<String>> {
     if !path.is_dir() {
-        return Ok(vec![String::from(dir)]);
+        return Ok(vec![path.display().to_string()]);
     }
 
-    let files = Files::new(path.to_path_buf(), recursively)?;
+    let files = Files::new(path, recursively)?;
     Ok(files.collect())
 }
 
@@ -205,12 +192,12 @@ where
     request
 }
 
-fn get_cache_filename() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+fn get_cache_filename() -> anyhow::Result<std::path::PathBuf> {
     const CACHE_FILENAME: &str = ".movies.json";
     Ok(env::current_dir()?.join(CACHE_FILENAME))
 }
 
-fn load_ids_list_from_cache() -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+fn load_ids_list_from_cache() -> anyhow::Result<HashMap<String, String>> {
     let path = get_cache_filename()?;
     let file = fs::File::open(&path);
     let ids = match file {
@@ -223,7 +210,7 @@ fn load_ids_list_from_cache() -> Result<HashMap<String, String>, Box<dyn std::er
             if err.kind() == io::ErrorKind::NotFound {
                 HashMap::new()
             } else {
-                return Err(Box::new(err));
+                return Err(err.into());
             }
         }
     };
@@ -308,12 +295,7 @@ where
         .map(|response| -> HashMap<String, String> { response.into_iter().collect() })
 }
 
-fn sync_list(
-    path: &str,
-    pattern: &str,
-    list_id: &str,
-    recursively: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn sync_list(args: Args) -> anyhow::Result<()> {
     use tokio_core::reactor::Core;
 
     let mut core = Core::new().unwrap();
@@ -327,10 +309,10 @@ fn sync_list(
     let token = core.run(do_auth)?;
     println!("Got token: {:?}", token);
 
-    let files = list_files(path, recursively)?;
+    let files = list_files(args.directory, !args.no_recursive)?;
 
     // Collect all movie names
-    let re = Regex::new(pattern)?;
+    let re = Regex::new(&args.pattern)?;
     let movie_names = files
         .into_iter()
         .filter_map(|file_name| extract_movie(&re, file_name.as_str()));
@@ -340,7 +322,7 @@ fn sync_list(
     let film_ids = resolve_film_ids(movie_names, &film_ids_cache, &client);
 
     // Fetch ids for films already on list.
-    let saved_film_ids = fetch_saved_films(list_id, &client, &token);
+    let saved_film_ids = fetch_saved_films(&args.list_id, &client, &token);
 
     // Get disjunction of films to save and films to remove.
     let to_remove_and_add = saved_film_ids.and_then(|saved| {
@@ -357,6 +339,7 @@ fn sync_list(
 
     // Update film list.
     let list_name = "Collection";
+    let list_id = args.list_id.clone();
     let result = to_remove_and_add
         .map(|(to_remove, to_add)| {
             if !to_remove.is_empty() || !to_add.is_empty() {
@@ -376,7 +359,7 @@ fn sync_list(
                     request.entries.len(),
                     request.films_to_remove.len()
                 );
-                Some(client.patch_list(list_id, &request, &token))
+                Some(client.patch_list(&list_id, &request, &token))
             } else {
                 println!("List up to date. Nothing to do.");
                 None
@@ -387,16 +370,7 @@ fn sync_list(
     Ok(())
 }
 
-fn main() {
-    let args: Args = Docopt::new(USAGE)
-        .and_then(|d| d.deserialize())
-        .unwrap_or_else(|e| e.exit());
-
-    sync_list(
-        args.arg_folder.as_str(),
-        args.flag_pattern.as_str(),
-        args.arg_list_id.as_str(),
-        args.flag_recursive,
-    )
-    .expect("Error!")
+fn main() -> anyhow::Result<()> {
+    let args = Args::from_args();
+    sync_list(args)
 }
