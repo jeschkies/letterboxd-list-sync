@@ -2,6 +2,7 @@
 name = "letterboxd-list-sync"
 version = "0.1.0"
 authors = ["karsten"]
+edition = "2018"
 
 [dependencies]
 docopt = "0.8"
