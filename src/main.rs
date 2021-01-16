@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context as _};
-use futures::{stream, StreamExt, TryStreamExt};
+use futures_util::{stream, StreamExt, TryStreamExt};
 use log::{debug, info, warn};
 use regex::Regex;
 use structopt::StructOpt;
