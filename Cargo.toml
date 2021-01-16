@@ -5,11 +5,13 @@ authors = ["karsten"]
 edition = "2018"
 
 [dependencies]
-futures = "0.1"
-letterboxd = "0.1"
+anyhow = "1.0.38"
+letterboxd = "0.3"
 regex = "0.2"
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 structopt = "0.3.21"
-tokio-core = "0.1"
-anyhow = "1.0.38"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+futures = "0.3"
+dotenv = "0.15.0"
+log = "0.4.13"
+env_logger = "0.8.2"
