@@ -9,7 +9,6 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 const REQUESTS_CONCURRENCY: usize = 16;
 
@@ -132,10 +131,8 @@ async fn search_movie(
 
 /// Extract movie names from file names with given pattern.
 fn extract_movie(pattern: &Regex, file_name: &str) -> Option<String> {
-    pattern
-        .captures(file_name)
-        .and_then(|matches| matches.get(1))
-        .and_then(|m| String::from_str(m.as_str()).ok())
+    let matches = pattern.captures(file_name)?;
+    Some(matches.get(1)?.as_str().to_string())
 }
 
 /// Get film ids response of list entries request.
