@@ -9,6 +9,7 @@ anyhow = "1.0.38"
 dotenv = "0.15.0"
 env_logger = "0.8.2"
 futures-util = { version = "0.3.12", default-features = false, features = ["alloc"] }
+lazy_static = "1.4.0"
 letterboxd = "0.3.0"
 log = "0.4.13"
 regex = "1.4.3"

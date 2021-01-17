@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context as _};
 use futures_util::{stream, StreamExt, TryStreamExt};
+use lazy_static::lazy_static;
 use log::{debug, info, warn};
 use regex::Regex;
 use structopt::StructOpt;
@@ -7,11 +8,13 @@ use walkdir::{DirEntry, WalkDir};
 
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 const REQUESTS_CONCURRENCY: usize = 16;
+const TITLE_YEAR_RE: &str = r"(?P<t>.*?)(?:\((\d{4}).*\)|\[(\d{4}).*\]|\.(\d{4}).*\.| (\d{4}) )";
 
 /// Letterboxd Sync.
 ///
@@ -21,9 +24,6 @@ struct Args {
     /// Disable recursive search for movies in the given folder.
     #[structopt(long)]
     no_recursive: bool,
-    /// Regex pattern used to extract the movie names.
-    #[structopt(long)]
-    pattern: String,
     /// ID of the Letterboxd list to sync the movies with.
     list_id: String,
     /// The directory to scan movies in.
@@ -35,7 +35,7 @@ struct Args {
 
 /// List all movie files in a dir.
 fn list_movie_files(path: PathBuf, recursively: bool) -> walkdir::Result<Vec<DirEntry>> {
-    const ACCEPTED_EXTENSIONS: &[&str] = &["mkv", "mp4", "avi"];
+    const ACCEPTED_EXTENSIONS: &[&str] = &["mkv", "mp4", "avi", "m4v"];
 
     fn is_hidden(entry: &DirEntry) -> bool {
         entry
@@ -72,23 +72,59 @@ fn list_movie_files(path: PathBuf, recursively: bool) -> walkdir::Result<Vec<Dir
 /// Search movie on letterbox.
 async fn search_movie(
     client: &letterboxd::Client,
-    movie: String,
+    metadata: Metadata,
 ) -> letterboxd::Result<letterboxd::SearchResponse> {
     let request = letterboxd::SearchRequest {
         cursor: None,
         per_page: Some(1),
-        input: movie,
+        input: metadata.to_string(),
         search_method: Some(letterboxd::SearchMethod::Autocomplete),
-        include: None,
+        include: Some(vec![letterboxd::SearchResultType::FilmSearchItem]),
         contribution_type: None,
     };
     client.search(&request).await
 }
 
-/// Extract movie names from file names with given pattern.
-fn extract_movie(pattern: &Regex, file_name: &str) -> Option<String> {
-    let matches = pattern.captures(file_name)?;
-    Some(matches.get(1)?.as_str().to_string())
+#[derive(Debug, Clone)]
+struct Metadata {
+    title: String,
+    year: Option<u16>,
+}
+
+impl fmt::Display for Metadata {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.title)?;
+        if let Some(year) = self.year {
+            write!(f, " ({})", year)?;
+        }
+        Ok(())
+    }
+}
+
+fn guess_metadata_with_regex(s: &str) -> Option<Metadata> {
+    lazy_static! {
+        static ref RE: Regex = Regex::new(TITLE_YEAR_RE).unwrap();
+    }
+    let caps = RE.captures(s)?;
+    let title = caps.name("t")?.as_str().replace('.', " ");
+    let year = caps
+        .iter()
+        .skip(2) // skip full capture and title group
+        .find_map(|group| group?.as_str().parse().ok());
+    Some(Metadata {
+        title: title.trim().to_string(),
+        year,
+    })
+}
+
+fn guess_metadata(path: &Path) -> Option<Metadata> {
+    let file_stem = path.file_stem()?.to_str()?;
+    guess_metadata_with_regex(file_stem).or_else(|| {
+        Some(Metadata {
+            title: file_stem.to_string(),
+            year: None,
+        })
+    })
 }
 
 /// Get film ids response of list entries request.
@@ -151,23 +187,24 @@ fn save_ids_list_to_cache(
 /// Resolve movie ids from movie names by first looking in the given cache, and then, if not found,
 /// by making a request through letterboxd api.
 async fn resolve_film_ids(
-    movie_names: impl IntoIterator<Item = String>,
+    movies: impl Iterator<Item = (String, Metadata)>,
     film_ids_cache: &HashMap<String, String>,
     client: &letterboxd::Client,
 ) -> letterboxd::Result<HashMap<String, String>> {
-    let film_id_requests = movie_names.into_iter().map(|movie| async {
-        if let Some(id) = film_ids_cache.get(&movie) {
-            Ok(Some((movie, id.clone())))
+    let film_id_requests = movies.into_iter().map(|(file_name, metadata)| async move {
+        if let Some(id) = film_ids_cache.get(&file_name) {
+            info!("Resolved id {} of {} from cache", id, metadata.to_string());
+            Ok(Some((file_name, id.clone())))
         } else {
-            let response = search_movie(&client, movie.clone()).await?;
+            let response = search_movie(&client, metadata.clone()).await?;
             let first_item = response.items.into_iter().next();
             match first_item {
                 Some(letterboxd::AbstractSearchItem::FilmSearchItem { film, .. }) => {
-                    debug!("Resolved id of {}: {}", movie, film.id);
-                    Ok(Some((movie, film.id)))
+                    info!("Resolved id {} of {}", film.id, metadata.to_string());
+                    Ok(Some((file_name, film.id)))
                 }
                 _ => {
-                    warn!("Did not find id for movie: {}", movie);
+                    warn!("Did not find id for: {}", metadata.to_string());
                     Ok(None)
                 }
             }
@@ -202,27 +239,27 @@ async fn new_client() -> anyhow::Result<letterboxd::Client> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::from_args();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
     dotenv::dotenv().ok();
 
     let cache_path = get_cache_filename().context("failed to resolve cache path")?;
 
-    let files = list_movie_files(args.directory.clone(), !args.no_recursive)
+    let movie_files = list_movie_files(args.directory.clone(), !args.no_recursive)
         .with_context(|| format!("failed to list files in '{}'", args.directory.display()))?;
-    log::debug!("Found {} movie files", files.len());
+    info!("Found {} movie files", movie_files.len());
+    let movies = movie_files.into_iter().filter_map(|entry| {
+        Some((
+            entry.file_name().to_str()?.to_string(),
+            guess_metadata(entry.path())?,
+        ))
+    });
 
     let client = new_client().await?;
-
-    // Collect all movie names
-    let re = Regex::new(&args.pattern)?;
-    let movie_names = files
-        .into_iter()
-        .filter_map(|entry| extract_movie(&re, entry.file_name().to_str()?));
 
     // Resolve movie ids either from cache or by requesting these
     let film_ids_cache = load_ids_list_from_cache(&cache_path)
         .with_context(|| format!("failed to read cache file at: {}", cache_path.display()))?;
-    let film_ids = resolve_film_ids(movie_names, &film_ids_cache, &client)
+    let film_ids = resolve_film_ids(movies, &film_ids_cache, &client)
         .await
         .context("failed to resolve film ids")?;
 
