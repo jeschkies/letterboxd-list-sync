@@ -1,27 +1,25 @@
-#![feature(conservative_impl_trait)]
-
 #[macro_use]
 extern crate serde_derive;
 extern crate docopt;
 extern crate futures;
 extern crate letterboxd;
 extern crate regex;
-extern crate tokio_core;
 extern crate serde_json;
+extern crate tokio_core;
 
-use futures::{Future, future};
+use futures::{future, Future};
 use regex::Regex;
 
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io;
-use std::str::FromStr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use docopt::Docopt;
 
-const USAGE: &'static str = "
+const USAGE: &str = "
 Letterboxid Sync. Synchronizes movies in a folder with a list on Letterboxd.
 
 Usage:
@@ -53,12 +51,10 @@ struct Files {
 
 impl Files {
     pub fn new(path: PathBuf, recursively: bool) -> io::Result<Files> {
-        fs::read_dir(path).map(|entries| {
-            Files {
-                entries: entries,
-                stack: Vec::new(),
-                recursively: recursively,
-            }
+        fs::read_dir(path).map(|entries| Files {
+            entries,
+            stack: Vec::new(),
+            recursively,
         })
     }
 
@@ -85,7 +81,7 @@ impl Files {
                 }
             }
         } else if self.recursively && path.is_dir() {
-            self.stack.push(path.to_path_buf());
+            self.stack.push(path);
             self.next()
         } else {
             None
@@ -111,7 +107,7 @@ impl Iterator for Files {
 }
 
 /// List all files in dir.
-fn list_files(dir: &str, recursively: bool) -> Result<Vec<String>, Box<std::error::Error>> {
+fn list_files(dir: &str, recursively: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let path = Path::new(dir);
     if !path.is_dir() {
         return Ok(vec![String::from(dir)]);
@@ -125,7 +121,7 @@ fn list_files(dir: &str, recursively: bool) -> Result<Vec<String>, Box<std::erro
 fn search_movie(
     client: &letterboxd::Client,
     movie: String,
-) -> Box<Future<Item = letterboxd::SearchResponse, Error = letterboxd::Error>> {
+) -> Box<dyn Future<Item = letterboxd::SearchResponse, Error = letterboxd::Error>> {
     let request = letterboxd::SearchRequest {
         cursor: None,
         per_page: Some(1),
@@ -150,13 +146,11 @@ fn film_id_set_from_response(entries: Vec<letterboxd::ListEntry>) -> HashSet<Str
     entries.into_iter().map(|entry| entry.film.id).collect()
 }
 
-
 fn fetch_saved_films<'a>(
     list_id: &'a str,
     client: &'a letterboxd::Client,
     token: &'a letterboxd::AccessToken,
 ) -> impl future::Future<Item = HashSet<String>, Error = letterboxd::Error> + 'a {
-
     // The state structure for the resurive loop.
     struct FetchState {
         request: letterboxd::ListEntriesRequest,
@@ -189,9 +183,9 @@ fn fetch_saved_films<'a>(
         client
             .list_entries(list_id, &state.request, Some(token))
             .map(|response| {
-                state.entries.extend(
-                    film_id_set_from_response(response.items),
-                );
+                state
+                    .entries
+                    .extend(film_id_set_from_response(response.items));
                 continue_or_break(response.next, state)
             })
     })
@@ -211,12 +205,12 @@ where
     request
 }
 
-fn get_cache_filename() -> Result<std::path::PathBuf, Box<std::error::Error>> {
-    const CACHE_FILENAME: &'static str = ".movies.json";
+fn get_cache_filename() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    const CACHE_FILENAME: &str = ".movies.json";
     Ok(env::current_dir()?.join(CACHE_FILENAME))
 }
 
-fn load_ids_list_from_cache() -> Result<HashMap<String, String>, Box<std::error::Error>> {
+fn load_ids_list_from_cache() -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let path = get_cache_filename()?;
     let file = fs::File::open(&path);
     let ids = match file {
@@ -236,9 +230,12 @@ fn load_ids_list_from_cache() -> Result<HashMap<String, String>, Box<std::error:
     Ok(ids)
 }
 
-fn save_ids_list_to_cache(ids: &HashMap<String, String>) -> Result<(), Box<std::error::Error>> {
+fn save_ids_list_to_cache(ids: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
     let path = &get_cache_filename()?;
-    let file = fs::OpenOptions::new().write(true).create(true).open(&path)?;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&path)?;
     Ok(serde_json::to_writer(file, &ids)?)
 }
 
@@ -249,17 +246,19 @@ struct FilmDetails {
 
 impl FilmDetails {
     fn new(name: String, id: Option<String>) -> Self {
-        Self { name: name, id: id }
+        Self { name, id }
     }
 }
 
 impl std::iter::FromIterator<FilmDetails> for HashMap<String, String> {
     fn from_iter<I: IntoIterator<Item = FilmDetails>>(iter: I) -> Self {
         iter.into_iter()
-            .filter_map(|film_details| if let Some(id) = film_details.id {
-                Some((film_details.name, id))
-            } else {
-                None
+            .filter_map(|film_details| {
+                if let Some(id) = film_details.id {
+                    Some((film_details.name, id))
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -274,41 +273,39 @@ fn resolve_film_ids<'a, I: IntoIterator<Item = String> + 'a>(
 ) -> impl future::Future<Item = HashMap<String, String>, Error = letterboxd::Error> + 'a
 where
 {
-    let film_ids_req = movie_names.into_iter().map(move |movie| -> Box<
-        Future<
-            Item = FilmDetails,
-            Error = letterboxd::Error,
-        >,
-    > {
-        let id = film_ids_cache.get(&movie);
-        // TODO: Try to remove Box here
-        if let Some(id) = id {
-            Box::new(future::ok(FilmDetails::new(movie, Some(id.clone()))))
-        } else {
-            Box::new(search_movie(&client, movie.clone()).and_then(
-                move |mut resp| {
-                    if resp.items.is_empty() {
-                        println!("[W] Did not find id for movie: {}", movie);
-                        return Ok(FilmDetails::new(movie, None));
-                    }
-
-                    match resp.items.drain(0..1).next() {
-                        Some(letterboxd::AbstractSearchItem::FilmSearchItem { film, .. }) => {
-                            println!("Resolved id of {}: {}", movie, film.id);
-                            Ok(FilmDetails::new(movie, Some(film.id)))
-                        }
-                        _ => {
+    let film_ids_req = movie_names.into_iter().map(
+        move |movie| -> Box<dyn Future<Item = FilmDetails, Error = letterboxd::Error>> {
+            let id = film_ids_cache.get(&movie);
+            // TODO: Try to remove Box here
+            if let Some(id) = id {
+                Box::new(future::ok(FilmDetails::new(movie, Some(id.clone()))))
+            } else {
+                Box::new(
+                    search_movie(&client, movie.clone()).and_then(move |mut resp| {
+                        if resp.items.is_empty() {
                             println!("[W] Did not find id for movie: {}", movie);
-                            Ok(FilmDetails::new(movie, None))
+                            return Ok(FilmDetails::new(movie, None));
                         }
-                    }
-                },
-            ))
-        }
-    });
-    future::join_all(film_ids_req).map(|response| -> HashMap<String, String> {
-        response.into_iter().collect()
-    })
+
+                        match resp.items.drain(0..1).next() {
+                            Some(letterboxd::AbstractSearchItem::FilmSearchItem {
+                                film, ..
+                            }) => {
+                                println!("Resolved id of {}: {}", movie, film.id);
+                                Ok(FilmDetails::new(movie, Some(film.id)))
+                            }
+                            _ => {
+                                println!("[W] Did not find id for movie: {}", movie);
+                                Ok(FilmDetails::new(movie, None))
+                            }
+                        }
+                    }),
+                )
+            }
+        },
+    );
+    future::join_all(film_ids_req)
+        .map(|response| -> HashMap<String, String> { response.into_iter().collect() })
 }
 
 fn sync_list(
@@ -316,7 +313,7 @@ fn sync_list(
     pattern: &str,
     list_id: &str,
     recursively: bool,
-) -> Result<(), Box<std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     use tokio_core::reactor::Core;
 
     let mut core = Core::new().unwrap();
@@ -334,9 +331,9 @@ fn sync_list(
 
     // Collect all movie names
     let re = Regex::new(pattern)?;
-    let movie_names = files.into_iter().filter_map(|file_name| {
-        extract_movie(&re, file_name.as_str())
-    });
+    let movie_names = files
+        .into_iter()
+        .filter_map(|file_name| extract_movie(&re, file_name.as_str()));
 
     // Resolve movie ids either from cache or by requesting these
     let film_ids_cache = load_ids_list_from_cache()?;
@@ -361,27 +358,29 @@ fn sync_list(
     // Update film list.
     let list_name = "Collection";
     let result = to_remove_and_add
-        .map(|(to_remove, to_add)| if !to_remove.is_empty() ||
-            !to_add.is_empty()
-        {
-            Some(create_update_request(
-                String::from(list_name),
-                to_remove,
-                to_add.into_iter(),
-            ))
-        } else {
-            None
+        .map(|(to_remove, to_add)| {
+            if !to_remove.is_empty() || !to_add.is_empty() {
+                Some(create_update_request(
+                    String::from(list_name),
+                    to_remove,
+                    to_add.into_iter(),
+                ))
+            } else {
+                None
+            }
         })
-        .and_then(|request| if let Some(request) = request {
-            println!(
-                "Updating list: {} to add, {} to remove",
-                request.entries.len(),
-                request.films_to_remove.len()
-            );
-            Some(client.patch_list(list_id, &request, &token))
-        } else {
-            println!("List up to date. Nothing to do.");
-            None
+        .and_then(|request| {
+            if let Some(request) = request {
+                println!(
+                    "Updating list: {} to add, {} to remove",
+                    request.entries.len(),
+                    request.films_to_remove.len()
+                );
+                Some(client.patch_list(list_id, &request, &token))
+            } else {
+                println!("List up to date. Nothing to do.");
+                None
+            }
         });
 
     println!("Result {:?}", core.run(result)?);
@@ -398,5 +397,6 @@ fn main() {
         args.flag_pattern.as_str(),
         args.arg_list_id.as_str(),
         args.flag_recursive,
-    ).expect("Error!")
+    )
+    .expect("Error!")
 }
