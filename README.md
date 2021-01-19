@@ -1,2 +1,2 @@
-# letterboxd-list-sync [![Build Status](https://travis-ci.org/jeschkies/letterboxd-list-sync.svg?branch=master)](https://travis-ci.org/jeschkies/letterboxd-list-sync)
+# letterboxd-list-sync ![Build Status](https://github.com/jeschkies/letterboxd-list-sync/workflows/CI/badge.svg)
 Synchronizes a Letterboxd list with movies in a directory.
