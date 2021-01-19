@@ -18,6 +18,8 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
+      - name: Install system dependencies
+        run: sudo apt-get install libssl-dev
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
