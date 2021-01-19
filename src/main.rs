@@ -28,7 +28,7 @@ struct Args {
     list_id: String,
     /// The directory to scan movies in.
     directory: PathBuf,
-    /// Do update the list at Letterboxd.
+    /// Do NOT update the list at Letterboxd.
     #[structopt(long)]
     dry_run: bool,
 }
