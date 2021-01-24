@@ -3,12 +3,13 @@ use futures_util::{stream, StreamExt, TryStreamExt};
 use log::{debug, info, warn};
 use regex::Regex;
 use structopt::StructOpt;
+use walkdir::{DirEntry, WalkDir};
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const REQUESTS_CONCURRENCY: usize = 16;
 
@@ -27,97 +28,52 @@ struct Args {
     list_id: String,
     /// The directory to scan movies in.
     directory: PathBuf,
-    /// Do update the list at Letterboxd and do not change any data.
+    /// Do NOT update the list at Letterboxd.
     #[structopt(long)]
     dry_run: bool,
 }
 
-/// Returns true if entry is a file, false otherwise or on error.
-fn is_file(entry: &fs::DirEntry) -> bool {
-    entry.metadata().ok().map(|m| m.is_file()).unwrap_or(false)
-}
+/// List all movie files in a dir.
+fn list_movie_files(path: PathBuf, recursively: bool) -> walkdir::Result<Vec<DirEntry>> {
+    const ACCEPTED_EXTENSIONS: &[&str] = &["mkv", "mp4", "avi"];
 
-struct Files {
-    entries: fs::ReadDir,
-    stack: Vec<PathBuf>,
-    recursively: bool,
-}
+    fn is_hidden(entry: &DirEntry) -> bool {
+        entry
+            .file_name()
+            .to_str()
+            .map(|s| s != "." && s.starts_with('.'))
+            .unwrap_or(false)
+    }
 
-impl Files {
-    pub fn new(path: PathBuf, recursively: bool) -> io::Result<Files> {
-        fs::read_dir(path).map(|entries| Files {
-            entries,
-            stack: Vec::new(),
-            recursively,
+    fn is_accepted_file(entry: &DirEntry) -> bool {
+        !entry.file_type().is_file()
+            || entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ACCEPTED_EXTENSIONS.contains(&ext))
+                .unwrap_or(false)
+    }
+
+    let mut walker = WalkDir::new(path);
+    if !recursively {
+        walker = walker.max_depth(0);
+    }
+    walker
+        .into_iter()
+        .filter_entry(|e| !is_hidden(e) && is_accepted_file(e))
+        .filter_map(|res| {
+            res.map(|e| Some(e).filter(|e| e.file_type().is_file()))
+                .transpose()
         })
-    }
-
-    /// Returns the next file in the next dir on the stack if any.
-    fn next_in_dir(&mut self) -> Option<String> {
-        self.stack.pop().and_then(|dir| {
-            match fs::read_dir(&dir) {
-                Ok(new_entries) => self.entries = new_entries,
-                Err(_) => warn!("Could not read files in {}", dir.display()),
-            }
-            self.next()
-        })
-    }
-
-    /// Return file of possible entry or move on to next.
-    fn handle_next(&mut self, entry: fs::DirEntry) -> Option<String> {
-        let path = entry.path();
-        if is_file(&entry) {
-            match entry.file_name().into_string() {
-                Ok(filename) => Some(filename),
-                Err(filename) => {
-                    warn!(
-                        "Could not retrieve filename of {}",
-                        filename.to_string_lossy()
-                    );
-                    self.next()
-                }
-            }
-        } else if self.recursively && path.is_dir() {
-            self.stack.push(path);
-            self.next()
-        } else {
-            None
-        }
-    }
-}
-
-impl Iterator for Files {
-    type Item = String;
-
-    fn next(&mut self) -> Option<String> {
-        match self.entries.next() {
-            None => self.next_in_dir(),
-            Some(maybe_entry) => {
-                if let Ok(entry) = maybe_entry {
-                    self.handle_next(entry)
-                } else {
-                    self.next()
-                }
-            }
-        }
-    }
-}
-
-/// List all files in dir.
-fn list_files(path: PathBuf, recursively: bool) -> anyhow::Result<Vec<String>> {
-    if !path.is_dir() {
-        return Ok(vec![path.display().to_string()]);
-    }
-
-    let files = Files::new(path, recursively)?;
-    Ok(files.collect())
+        .collect()
 }
 
 /// Search movie on letterbox.
 async fn search_movie(
     client: &letterboxd::Client,
     movie: String,
-) -> Result<letterboxd::SearchResponse, letterboxd::Error> {
+) -> letterboxd::Result<letterboxd::SearchResponse> {
     let request = letterboxd::SearchRequest {
         cursor: None,
         per_page: Some(1),
@@ -143,7 +99,7 @@ fn film_id_set_from_response(entries: Vec<letterboxd::ListEntry>) -> HashSet<Str
 async fn fetch_saved_films(
     list_id: &str,
     client: &letterboxd::Client,
-) -> Result<HashSet<String>, letterboxd::Error> {
+) -> letterboxd::Result<HashSet<String>> {
     let mut request = letterboxd::ListEntriesRequest {
         per_page: Some(100),
         ..Default::default()
@@ -165,9 +121,8 @@ fn get_cache_filename() -> anyhow::Result<std::path::PathBuf> {
     Ok(env::current_dir()?.join(CACHE_FILENAME))
 }
 
-fn load_ids_list_from_cache() -> anyhow::Result<HashMap<String, String>> {
-    let path = get_cache_filename()?;
-    let file = fs::File::open(&path);
+fn load_ids_list_from_cache(path: impl AsRef<Path>) -> anyhow::Result<HashMap<String, String>> {
+    let file = fs::File::open(path);
     let ids = match file {
         Ok(file) => {
             let ids: HashMap<String, String> = serde_json::from_reader(file)?;
@@ -185,13 +140,12 @@ fn load_ids_list_from_cache() -> anyhow::Result<HashMap<String, String>> {
     Ok(ids)
 }
 
-fn save_ids_list_to_cache(ids: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
-    let path = &get_cache_filename()?;
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(&path)?;
-    Ok(serde_json::to_writer(file, &ids)?)
+fn save_ids_list_to_cache(
+    ids: &HashMap<String, String>,
+    path: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    let file = fs::File::create(path)?;
+    Ok(serde_json::to_writer_pretty(file, &ids)?)
 }
 
 /// Resolve movie ids from movie names by first looking in the given cache, and then, if not found,
@@ -200,7 +154,7 @@ async fn resolve_film_ids(
     movie_names: impl IntoIterator<Item = String>,
     film_ids_cache: &HashMap<String, String>,
     client: &letterboxd::Client,
-) -> Result<HashMap<String, String>, letterboxd::Error> {
+) -> letterboxd::Result<HashMap<String, String>> {
     let film_id_requests = movie_names.into_iter().map(|movie| async {
         if let Some(id) = film_ids_cache.get(&movie) {
             Ok(Some((movie, id.clone())))
@@ -251,18 +205,23 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     dotenv::dotenv().ok();
 
-    let client = new_client().await?;
+    let cache_path = get_cache_filename().context("failed to resolve cache path")?;
 
-    let files = list_files(args.directory, !args.no_recursive)?;
+    let files = list_movie_files(args.directory.clone(), !args.no_recursive)
+        .with_context(|| format!("failed to list files in '{}'", args.directory.display()))?;
+    log::debug!("Found {} movie files", files.len());
+
+    let client = new_client().await?;
 
     // Collect all movie names
     let re = Regex::new(&args.pattern)?;
     let movie_names = files
         .into_iter()
-        .filter_map(|file_name| extract_movie(&re, file_name.as_str()));
+        .filter_map(|entry| extract_movie(&re, entry.file_name().to_str()?));
 
     // Resolve movie ids either from cache or by requesting these
-    let film_ids_cache = load_ids_list_from_cache()?;
+    let film_ids_cache = load_ids_list_from_cache(&cache_path)
+        .with_context(|| format!("failed to read cache file at: {}", cache_path.display()))?;
     let film_ids = resolve_film_ids(movie_names, &film_ids_cache, &client)
         .await
         .context("failed to resolve film ids")?;
@@ -272,10 +231,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to fetch ids already on the list")?;
 
-    if !args.dry_run {
-        if let Err(err) = save_ids_list_to_cache(&film_ids) {
-            warn!("Could not save film ids to cache: {}", err);
-        }
+    if let Err(err) = save_ids_list_to_cache(&film_ids, cache_path) {
+        warn!("failed to save film ids to cache: {}", err);
     }
 
     // Get disjunction of films to save and films to remove.
